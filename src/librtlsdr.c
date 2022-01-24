@@ -121,6 +121,7 @@ struct rtlsdr_dev {
 	unsigned int xfer_errors;
 	char manufact[256];
 	char product[256];
+	int live_transfers;
 };
 
 void rtlsdr_set_gpio_bit(rtlsdr_dev_t *dev, uint8_t gpio, int val);
@@ -1717,11 +1718,15 @@ static void LIBUSB_CALL _libusb_callback(struct libusb_transfer *xfer)
 {
 	rtlsdr_dev_t *dev = (rtlsdr_dev_t *)xfer->user_data;
 
+	dev->live_transfers --;
+
 	if (LIBUSB_TRANSFER_COMPLETED == xfer->status) {
 		if (dev->cb)
 			dev->cb(xfer->buffer, xfer->actual_length, dev->cb_ctx);
 
-		libusb_submit_transfer(xfer); /* resubmit transfer */
+		if(!dev->async_cancel)
+			if( libusb_submit_transfer(xfer) == 0) /* resubmit transfer */
+				dev->live_transfers++;
 		dev->xfer_errors = 0;
 	} else if (LIBUSB_TRANSFER_CANCELLED != xfer->status) {
 #ifndef _WIN32
@@ -1869,9 +1874,9 @@ int rtlsdr_read_async(rtlsdr_dev_t *dev, rtlsdr_read_async_cb_t cb, void *ctx,
 {
 	unsigned int i;
 	int r = 0;
+	int ret = 0;
 	struct timeval tv = { 1, 0 };
-	struct timeval zerotv = { 0, 0 };
-	enum rtlsdr_async_status next_status = RTLSDR_INACTIVE;
+	struct timeval canceltv = { 0, 50 };
 
 	if (!dev)
 		return -1;
@@ -1885,6 +1890,7 @@ int rtlsdr_read_async(rtlsdr_dev_t *dev, rtlsdr_read_async_cb_t cb, void *ctx,
 	dev->cb = cb;
 	dev->cb_ctx = ctx;
 
+
 	if (buf_num > 0)
 		dev->xfer_buf_num = buf_num;
 	else
@@ -1896,6 +1902,8 @@ int rtlsdr_read_async(rtlsdr_dev_t *dev, rtlsdr_read_async_cb_t cb, void *ctx,
 		dev->xfer_buf_len = DEFAULT_BUF_LENGTH;
 
 	_rtlsdr_alloc_async_buffers(dev);
+
+	dev->live_transfers = 0;
 
 	for(i = 0; i < dev->xfer_buf_num; ++i) {
 		libusb_fill_bulk_transfer(dev->xfer[i],
@@ -1910,70 +1918,47 @@ int rtlsdr_read_async(rtlsdr_dev_t *dev, rtlsdr_read_async_cb_t cb, void *ctx,
 		r = libusb_submit_transfer(dev->xfer[i]);
 		if (r < 0) {
 			fprintf(stderr, "Failed to submit transfer %i\n"
-					"Please increase your allowed " 
+					"Please increase your allowed "
 					"usbfs buffer size with the "
 					"following command:\n"
 					"echo 0 > /sys/module/usbcore"
 					"/parameters/usbfs_memory_mb\n", i);
 			dev->async_status = RTLSDR_CANCELING;
+			ret = -3;
 			break;
 		}
+		else
+			dev->live_transfers++;
 	}
 
-	while (RTLSDR_INACTIVE != dev->async_status) {
+	while (RTLSDR_RUNNING == dev->async_status) {
 		r = libusb_handle_events_timeout_completed(dev->ctx, &tv,
-							   &dev->async_cancel);
+			&dev->async_cancel);
 		if (r < 0) {
 			/*fprintf(stderr, "handle_events returned: %d\n", r);*/
 			if (r == LIBUSB_ERROR_INTERRUPTED) /* stray signal */
 				continue;
-			break;
-		}
-
-		if (RTLSDR_CANCELING == dev->async_status) {
-			next_status = RTLSDR_INACTIVE;
-
-			if (!dev->xfer)
-				break;
-
-			for(i = 0; i < dev->xfer_buf_num; ++i) {
-				if (!dev->xfer[i])
-					continue;
-
-				if (LIBUSB_TRANSFER_CANCELLED !=
-						dev->xfer[i]->status) {
-					r = libusb_cancel_transfer(dev->xfer[i]);
-					/* handle events after canceling
-					 * to allow transfer status to
-					 * propagate */
-#ifdef _WIN32
-					Sleep(1);
-#endif
-					libusb_handle_events_timeout_completed(dev->ctx,
-									       &zerotv, NULL);
-					if (r < 0)
-						continue;
-
-					next_status = RTLSDR_CANCELING;
-				}
-			}
-
-			if (dev->dev_lost || RTLSDR_INACTIVE == next_status) {
-				/* handle any events that still need to
-				 * be handled before exiting after we
-				 * just cancelled all transfers */
-				libusb_handle_events_timeout_completed(dev->ctx,
-								       &zerotv, NULL);
-				break;
-			}
+			rtlsdr_cancel_async(dev);
+			ret = -4;
 		}
 	}
 
+	if (!dev->xfer) return -5;
+
+	for(i = 0; i < dev->xfer_buf_num; ++i)
+		if (dev->xfer[i])
+			libusb_cancel_transfer(dev->xfer[i]);
+
+	for (i = 0; i < dev->xfer_buf_num && dev->live_transfers > 0; ++i)
+		libusb_handle_events_timeout_completed(dev->ctx, &canceltv, NULL);
+
+	if(dev->live_transfers > 0) return -6;
+
 	_rtlsdr_free_async_buffers(dev);
 
-	dev->async_status = next_status;
+	dev->async_status = RTLSDR_INACTIVE;
 
-	return r;
+	return ret;
 }
 
 int rtlsdr_cancel_async(rtlsdr_dev_t *dev)
