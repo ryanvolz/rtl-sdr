@@ -1970,6 +1970,9 @@ int rtlsdr_cancel_async(rtlsdr_dev_t *dev)
 	if (RTLSDR_RUNNING == dev->async_status) {
 		dev->async_status = RTLSDR_CANCELING;
 		dev->async_cancel = 1;
+
+		libusb_interrupt_event_handler(dev->ctx);
+
 		return 0;
 	}
 
