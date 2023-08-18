@@ -44,7 +44,7 @@
 
 /* Those initial values start from REG_SHADOW_START */
 static const uint8_t r82xx_init_array[NUM_REGS] = {
-	0x83, 0x32, 0x75,			/* 05 to 07 */
+	0x83, 0x30, 0x75,			/* 05 to 07 */
 	0xc0, 0x40, 0xd6, 0x6c,			/* 08 to 0b */
 	0xf5, 0x63, 0x75, 0x68,			/* 0c to 0f */
 	0x6c, 0x83, 0x80, 0x00,			/* 10 to 13 */
@@ -814,12 +814,12 @@ static int r82xx_set_tv_standard(struct r82xx_priv *priv,
 	/* BW < 6 MHz */
 	if_khz = 3570;
 	filt_cal_lo = 56000;	/* 52000->56000 */
-	filt_gain = 0x10;	/* +3db, 6mhz on */
+	filt_gain = 0x30;	/* +3db, 6mhz on */
 	img_r = 0x00;		/* image negative */
 	filt_q = 0x10;		/* r10[4]:low q(1'b1) */
 	hp_cor = 0x6b;		/* 1.7m disable, +2cap, 1.0mhz */
 	ext_enable = 0x60;	/* r30[6]=1 ext enable; r30[5]:1 ext at lna max-1 */
-	loop_through = 0x01;	/* r5[7], lt off */
+	loop_through = 0x80;	/* r5[7], lt off */
 	lt_att = 0x00;		/* r31[7], lt att enable */
 	flt_ext_widest = 0x00;	/* r15[7]: flt_ext_wide off */
 	polyfil_cur = 0x60;	/* r25[6:5]:min */

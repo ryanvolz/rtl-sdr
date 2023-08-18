@@ -122,6 +122,8 @@ struct rtlsdr_dev {
 	char manufact[256];
 	char product[256];
 	int live_transfers;
+	int force_bt;
+	enum rtlsdr_ds_mode direct_sampling_mode;
 };
 
 void rtlsdr_set_gpio_bit(rtlsdr_dev_t *dev, uint8_t gpio, int val);
@@ -365,6 +367,7 @@ static rtlsdr_dongle_t known_devices[] = {
 #define BULK_TIMEOUT	0
 
 #define EEPROM_ADDR	0xa0
+#define EEPROM_SIZE     256
 
 enum usb_reg {
 	USB_SYSCTL		= 0x2000,
@@ -885,9 +888,22 @@ int rtlsdr_read_eeprom(rtlsdr_dev_t *dev, uint8_t *data, uint8_t offset, uint16_
 int rtlsdr_set_center_freq(rtlsdr_dev_t *dev, uint32_t freq)
 {
 	int r = -1;
+	int last_ds;
 
 	if (!dev || !dev->tuner)
 		return -1;
+
+	/* Get the last direct sampling status */
+	last_ds = rtlsdr_get_direct_sampling(dev);
+	if (last_ds < 0)
+		return 1;
+
+	/* Check if direct sampling should be enabled.
+	* Also only enable auto switch if ds mode is 0 (aka None, or standard mode)
+	*/
+	if(dev->direct_sampling_mode == 0) {
+		dev->direct_sampling = (freq < 24000000 && dev->tuner_type == RTLSDR_TUNER_R820T) ? 2 : 0;
+	}
 
 	if (dev->direct_sampling) {
 		r = rtlsdr_set_if_freq(dev, freq);
@@ -901,6 +917,13 @@ int rtlsdr_set_center_freq(rtlsdr_dev_t *dev, uint32_t freq)
 		dev->freq = freq;
 	else
 		dev->freq = 0;
+
+	/* Have to run this after dev->freq is updated to avoid setting
+	* the previous frequency back again
+	*/
+	if (last_ds != dev->direct_sampling) {
+		return _rtlsdr_set_direct_sampling(dev, dev->direct_sampling);
+	}
 
 	return r;
 }
@@ -1163,7 +1186,15 @@ int rtlsdr_set_agc_mode(rtlsdr_dev_t *dev, int on)
 	return rtlsdr_demod_write_reg(dev, 0, 0x19, on ? 0x25 : 0x05, 1);
 }
 
+
 int rtlsdr_set_direct_sampling(rtlsdr_dev_t *dev, int on)
+{
+	/* When the UI sets the ds mode, remember the mode set */
+	dev->direct_sampling_mode = (enum rtlsdr_ds_mode)on;
+	return _rtlsdr_set_direct_sampling(dev, on);
+}
+
+int _rtlsdr_set_direct_sampling(rtlsdr_dev_t *dev, int on)
 {
 	int r = 0;
 
@@ -1242,9 +1273,14 @@ int rtlsdr_set_offset_tuning(rtlsdr_dev_t *dev, int on)
 	if (!dev)
 		return -1;
 
+	/* RTL-SDR-BLOG Hack, enables us to turn on the bias tee by clicking on "offset tuning" in software that doesn't have specified bias tee support.
+	* Offset tuning is not used for R820T/R828D devices so it is no problem.
+	*/
 	if ((dev->tuner_type == RTLSDR_TUNER_R820T) ||
-	    (dev->tuner_type == RTLSDR_TUNER_R828D))
+	    (dev->tuner_type == RTLSDR_TUNER_R828D)) {
+		rtlsdr_set_bias_tee(dev, on);
 		return -2;
+	}
 
 	if (dev->direct_sampling)
 		return -3;
@@ -1454,6 +1490,7 @@ int rtlsdr_open(rtlsdr_dev_t **out_dev, uint32_t index)
 	struct libusb_device_descriptor dd;
 	uint8_t reg;
 	ssize_t cnt;
+	uint8_t buf[EEPROM_SIZE];
 
 	dev = malloc(sizeof(rtlsdr_dev_t));
 	if (NULL == dev)
@@ -1634,6 +1671,14 @@ found:
 	default:
 		break;
 	}
+
+	/* Hack to force the Bias T to always be on if we set the IR-Endpoint
+	* bit in the EEPROM to 0. Default on EEPROM is 1.
+	*/
+	r = rtlsdr_read_eeprom(dev, buf, 0, EEPROM_SIZE);
+	dev->force_bt = (buf[7] & 0x02) ? 0 : 1;
+	if(dev->force_bt)
+		rtlsdr_set_bias_tee(dev, 1);
 
 	if (dev->tuner->init)
 		r = dev->tuner->init(dev);
@@ -2198,6 +2243,12 @@ int rtlsdr_set_bias_tee_gpio(rtlsdr_dev_t *dev, int gpio, int on)
 {
 	if (!dev)
 		return -1;
+
+	/* If it's the bias tee GPIO, and force bias tee is on
+	* don't allow the bias tee to turn off. Prevents software
+	* that initializes with the bias tee off from turning it off */
+	if(gpio == 0 && dev->force_bt)
+		on = 1;
 
 	rtlsdr_set_gpio_output(dev, gpio);
 	rtlsdr_set_gpio_bit(dev, gpio, on);
