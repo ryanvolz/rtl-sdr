@@ -483,7 +483,10 @@ static int r82xx_set_pll(struct r82xx_priv *priv, uint32_t freq)
 	regs[0] = mask_reg8(regs[0], refdiv2, 0x10);
 
 	/* set VCO current = 100 */
-	regs[2] = mask_reg8(regs[2], 0x80, 0xe0);
+	/* regs[2] = mask_reg8(regs[2], 0x80, 0xe0); */
+
+	/* RTL-SDR Blog Modification: Set VCO current to MAX */
+	regs[2] = mask_reg8(regs[2], 0x06, 0xff);
 
 	/* Calculate divider */
 	while (mix_div <= 64) {
@@ -572,7 +575,9 @@ static int r82xx_set_pll(struct r82xx_priv *priv, uint32_t freq)
 
 		if (!i) {
 			/* Didn't lock. Increase VCO current */
-			rc = r82xx_write_reg_mask(priv, 0x12, 0x60, 0xe0);
+			/* rc = r82xx_write_reg_mask(priv, 0x12, 0x60, 0xe0); */
+			/* RTL-SDR Blog Hack: Set max current */
+			rc = r82xx_write_reg_mask(priv, 0x12, 0x06, 0xff);
 			if (rc < 0)
 				return rc;
 		}
@@ -695,6 +700,10 @@ static int r82xx_sysfreq_sel(struct r82xx_priv *priv, uint32_t freq,
 	rc = r82xx_write_reg_mask(priv, 0x11, cp_cur, 0x38);
 	if (rc < 0)
 		return rc;
+
+	/* RTL-SDR Blog Hack. Improve L-band performance by setting PLL drop out to 2.0v */
+        div_buf_cur = 0xa0;
+
 	rc = r82xx_write_reg_mask(priv, 0x17, div_buf_cur, 0x30);
 	if (rc < 0)
 		return rc;
