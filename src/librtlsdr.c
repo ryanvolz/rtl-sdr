@@ -2180,8 +2180,16 @@ int rtlsdr_read_async(rtlsdr_dev_t *dev, rtlsdr_read_async_cb_t cb, void *ctx,
 #endif
 					libusb_handle_events_timeout_completed(dev->ctx,
 									       &zerotv, NULL);
-					if (r < 0)
+					if (r == LIBUSB_ERROR_NOT_FOUND) {
+						/* transfer not in progress, already complete, or
+						 * already cancelled, but we're here because the
+						 * handler has not yet been called, so keep waiting */
+						libusb_handle_events_timeout_completed(dev->ctx,
+															   &tv,
+															   NULL);
+					} else if (r < 0) {
 						continue;
+					}
 
 					next_status = RTLSDR_CANCELING;
 				}
